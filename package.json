@@ -8,7 +8,10 @@
     "start": "node --env-file=.env server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.5",
     "express": "^5.1.0",
+    "multer": "^2.2.0",
+    "pdf-parse": "^2.4.5",
     "solapi": "^6.0.1"
   }
 }

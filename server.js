@@ -2,9 +2,13 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const express = require('express');
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
 const academy = require('./data/academy');
 const { notifyOwner } = require('./sms');
+const aiChat = require('./ai-chat');
 const app = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const port = Number(process.env.PORT) || 3000;
 const capacity = 30;
 const slotCapacity = 2;
@@ -29,6 +33,20 @@ db.exec(`
 `);
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_active_phone ON reservations(phone) WHERE status = 'confirmed'`);
 db.prepare(`DELETE FROM reservations WHERE created_at <= datetime('now', '-30 days')`).run();
+
+// 원장님이 업로드한 커리큘럼 자료 (AI 챗봇이 답변할 때 참고 자료로 사용)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS curriculum_docs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+function getCurriculumDoc() {
+  return db.prepare(`SELECT filename, content, uploaded_at AS uploadedAt FROM curriculum_docs ORDER BY id DESC LIMIT 1`).get();
+}
 
 const gradeOptions = ['초1','초2','초3','초4','초5','초6','중1','중2','중3'];
 const academyPlace = `${academy.name} 상담실 · ${academy.address}`;
@@ -103,18 +121,66 @@ app.get('/api/academy', (_req, res) => {
   const { answers, ...publicInfo } = academy;
   res.json(publicInfo);
 });
-app.post('/api/chat', (req, res) => {
+app.post('/api/chat', async (req, res) => {
   const question = String(req.body?.question || '').trim();
   const key = String(req.body?.key || '').trim();
+
+  // 빠른 버튼 클릭은 미리 정해둔 답변을 바로 반환 (AI 호출 없이 즉시, 무료)
+  if (key && academy.answers[key]) {
+    return res.json({ answer: academy.answers[key], mode: 'keyword' });
+  }
+
+  // 자유 질문은 AI가 설정되어 있으면 AI로 답변 (업로드된 커리큘럼 자료도 참고)
+  if (aiChat.isConfigured && question) {
+    try {
+      const curriculumDoc = getCurriculumDoc();
+      const aiAnswer = await aiChat.getAnswer({ question, academy, curriculumText: curriculumDoc?.content });
+      if (aiAnswer) return res.json({ answer: aiAnswer, mode: 'ai' });
+    } catch (err) {
+      console.error('[AI 답변 실패, 키워드 방식으로 대체]', err.message);
+    }
+  }
+
+  // AI 미설정이거나 실패했을 때의 대체 방식(키워드 매칭)
   const rules = [
     ['curriculum', /커리|수업|과정/], ['level', /레벨|테스트/],
     ['schedule', /시간|시간표/], ['shuttle', /셔틀|버스/],
     ['tuition', /수강료|비용|얼마|가격/], ['elementary', /초등/],
     ['middle', /중등|내신/], ['discount', /할인|이벤트|행사/]
   ];
-  const matched = academy.answers[key] ? key : rules.find(([, regex]) => regex.test(question))?.[0];
+  const matched = rules.find(([, regex]) => regex.test(question))?.[0];
   const fallback = '수강료, 시간표, 레벨 테스트, 셔틀처럼 궁금한 내용을 조금 더 구체적으로 알려주세요.';
-  res.json({ answer: matched ? academy.answers[matched] : fallback });
+  res.json({ answer: matched ? academy.answers[matched] : fallback, mode: 'keyword' });
+});
+
+// 커리큘럼 자료 업로드 (원장님 전용 - 관리자 인증 필요)
+app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일을 선택해 주세요.' });
+  const { originalname, buffer, mimetype } = req.file;
+  let text = '';
+  try {
+    if (mimetype === 'application/pdf' || /\.pdf$/i.test(originalname)) {
+      text = (await pdfParse(buffer)).text;
+    } else {
+      text = buffer.toString('utf8');
+    }
+  } catch (err) {
+    return res.status(400).json({ error: '파일에서 글자를 읽지 못했어요. PDF 또는 텍스트(.txt) 파일만 지원해요.' });
+  }
+  text = text.trim();
+  if (!text) return res.status(400).json({ error: '파일에서 내용을 찾지 못했어요.' });
+  db.exec(`DELETE FROM curriculum_docs`);
+  db.prepare(`INSERT INTO curriculum_docs (filename, content) VALUES (?, ?)`).run(originalname, text);
+  res.json({ message: '커리큘럼 자료가 업로드되었습니다.', filename: originalname, length: text.length });
+});
+
+// 현재 업로드된 커리큘럼 자료 정보 확인 (원장님 전용)
+app.get('/api/curriculum', requireAdminAuth, (_req, res) => {
+  const doc = getCurriculumDoc();
+  res.json({
+    document: doc ? { filename: doc.filename, uploadedAt: doc.uploadedAt, length: doc.content.length } : null,
+    aiEnabled: aiChat.isConfigured,
+  });
 });
 
 app.get('/api/reservations/status', (_req, res) => {
