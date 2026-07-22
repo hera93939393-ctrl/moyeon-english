@@ -35,6 +35,23 @@ const academyPlace = `${academy.name} 상담실 · ${academy.address}`;
 const materials = '필기구, 학생이 최근 푼 영어 문제집 또는 성적표(있는 경우)';
 const resultGuide = '테스트 직후 간단히 구두 안내하고, 상세 결과는 당일 보호자 연락처로 안내합니다.';
 
+// 관리자 화면(예약 목록 등 개인정보 포함)은 아이디/비밀번호로 보호합니다.
+// .env 에 ADMIN_USER / ADMIN_PASSWORD 를 설정하세요. 설정 전에는 접근 자체를 막습니다.
+function requireAdminAuth(req, res, next) {
+  const adminUser = process.env.ADMIN_USER;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminUser || !adminPassword) {
+    return res.status(503).send('관리자 계정이 설정되지 않았습니다. .env 에 ADMIN_USER, ADMIN_PASSWORD 를 설정해 주세요.');
+  }
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  const decoded = scheme === 'Basic' && encoded ? Buffer.from(encoded, 'base64').toString('utf8') : '';
+  const [user, password] = decoded.split(':');
+  if (user === adminUser && password === adminPassword) return next();
+  res.set('WWW-Authenticate', 'Basic realm="moyeon-admin"');
+  return res.status(401).send('관리자 인증이 필요합니다.');
+}
+
 function getSlots(ignoreId = 0) {
   const slots = [];
   const counts = new Map(
@@ -77,6 +94,10 @@ function validateReservation(body, ignoreId = 0) {
 }
 
 app.use(express.json());
+// 정적 파일보다 먼저 등록해서, admin.html 은 항상 인증을 거치도록 합니다.
+app.get('/admin.html', requireAdminAuth, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/academy', (_req, res) => {
   const { answers, ...publicInfo } = academy;
@@ -147,7 +168,7 @@ app.delete('/api/reservations/:id', (req, res) => {
   res.json({ message: '예약이 취소되었습니다. 다른 시간으로 언제든 다시 신청해 주세요.' });
 });
 
-app.get('/api/reservations', (_req, res) => {
+app.get('/api/reservations', requireAdminAuth, (_req, res) => {
   const reservations = db.prepare(`
     SELECT id, student_name AS studentName, phone, student_grade AS studentGrade,
            subject AS school, slot_id AS slotId, note, status, reminder_status AS reminderStatus, created_at AS createdAt
@@ -156,7 +177,7 @@ app.get('/api/reservations', (_req, res) => {
   res.json({ capacity, reservations });
 });
 
-app.get('/api/reminders/due', (_req, res) => {
+app.get('/api/reminders/due', requireAdminAuth, (_req, res) => {
   const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
   const reminders = db.prepare(`SELECT id, student_name AS studentName, phone, slot_id AS slotId FROM reservations WHERE status='confirmed' AND reminder_status='pending' AND slot_id LIKE ?`).all(`${tomorrow}|%`);
   res.json({ channel: '문자(SMS) 발송 서비스 연동 대기', reminders });
