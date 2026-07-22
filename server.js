@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const express = require('express');
 const academy = require('./data/academy');
+const { notifyOwner } = require('./sms');
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const capacity = 30;
@@ -115,6 +116,9 @@ app.post('/api/reservations', (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(data.studentName, data.phone, data.studentGrade, data.school, '', data.slotId, data.note, manageToken);
     console.log(`[새 레벨 테스트 예약] ${data.studentName} / ${data.studentGrade} / ${slot.label}`);
+    notifyOwner(
+      `[모연 English] 레벨테스트 예약 접수\n학생: ${data.studentName} (${data.studentGrade}, ${data.school})\n일정: ${slot.label}\n연락처: ${data.phone}`
+    ).catch((err) => console.error('[문자 알림 처리 중 오류]', err));
     res.status(201).json({ id: Number(result.lastInsertRowid), manageToken, message: '레벨 테스트 예약이 확정되었습니다!', remaining: capacity - count - 1, confirmation: { studentName: data.studentName, school: data.school, dateTime: slot.label, place: academyPlace, materials, resultGuide, reminder: '예약 하루 전 보호자 연락처로 문자(SMS) 안내 예정' } });
   } catch (error) {
     if (String(error.message).includes('UNIQUE')) return res.status(409).json({ error: '이미 예약된 연락처예요. 변경은 학원으로 문의해 주세요.' });

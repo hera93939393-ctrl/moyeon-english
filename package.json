@@ -5,9 +5,10 @@
   "description": "모연 English 학원 안내 챗봇",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --env-file=.env server.js"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "solapi": "^6.0.1"
   }
 }
