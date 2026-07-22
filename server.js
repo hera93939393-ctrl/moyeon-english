@@ -48,6 +48,25 @@ function getCurriculumDoc() {
   return db.prepare(`SELECT filename, content, uploaded_at AS uploadedAt FROM curriculum_docs ORDER BY id DESC LIMIT 1`).get();
 }
 
+// 업로드된 커리큘럼 문서에서 질문과 가장 관련 있는 문단을 찾습니다. (AI 없이, 무료 키워드 검색)
+function searchCurriculum(content, question) {
+  if (!content || !question) return null;
+  const paragraphs = content.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const terms = question.match(/[가-힣a-zA-Z0-9]{2,}/g) || [];
+  if (!paragraphs.length || !terms.length) return null;
+
+  let best = null;
+  let bestScore = 0;
+  for (const paragraph of paragraphs) {
+    const score = terms.reduce((sum, term) => sum + (paragraph.includes(term) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = paragraph;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
 const gradeOptions = ['초1','초2','초3','초4','초5','초6','중1','중2','중3'];
 const academyPlace = `${academy.name} 상담실 · ${academy.address}`;
 const materials = '필기구, 학생이 최근 푼 영어 문제집 또는 성적표(있는 경우)';
@@ -130,10 +149,17 @@ app.post('/api/chat', async (req, res) => {
     return res.json({ answer: academy.answers[key], mode: 'keyword' });
   }
 
-  // 자유 질문은 AI가 설정되어 있으면 AI로 답변 (업로드된 커리큘럼 자료도 참고)
+  const curriculumDoc = question ? getCurriculumDoc() : null;
+
+  // 자유 질문 1순위: 업로드된 커리큘럼 자료에서 관련 문단 검색 (무료, AI 아님)
+  if (curriculumDoc) {
+    const found = searchCurriculum(curriculumDoc.content, question);
+    if (found) return res.json({ answer: found, mode: 'document-search' });
+  }
+
+  // 자유 질문 2순위: Claude API 키가 설정되어 있을 때만 AI로 답변 (선택 사항, 기본은 꺼짐)
   if (aiChat.isConfigured && question) {
     try {
-      const curriculumDoc = getCurriculumDoc();
       const aiAnswer = await aiChat.getAnswer({ question, academy, curriculumText: curriculumDoc?.content });
       if (aiAnswer) return res.json({ answer: aiAnswer, mode: 'ai' });
     } catch (err) {

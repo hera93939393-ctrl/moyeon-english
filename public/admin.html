@@ -25,9 +25,9 @@ const curriculumResult=document.querySelector('#curriculum-result');
 function showCurriculumResult(message,isError){curriculumResult.textContent=message;curriculumResult.className='result show'+(isError?' error':' ok')}
 async function loadCurriculumStatus(){
   const data=await fetch('/api/curriculum').then(r=>r.json());
-  if(!data.aiEnabled){curriculumStatus.textContent='⚠️ AI 챗봇이 아직 꺼져 있어요 (.env 에 ANTHROPIC_API_KEY 필요). 업로드는 미리 해둘 수 있어요.'}
-  else if(data.document){curriculumStatus.textContent=`현재 자료: ${data.document.filename} (${new Date(data.document.uploadedAt).toLocaleString('ko-KR')} 업로드, ${data.document.length.toLocaleString()}자)`}
-  else{curriculumStatus.textContent='아직 업로드된 커리큘럼 자료가 없어요. AI는 기본 정보로만 답변해요.'}
+  const engine=data.aiEnabled?'AI(Claude)가':'파일 검색 방식이';
+  if(data.document){curriculumStatus.textContent=`현재 자료: ${data.document.filename} (${new Date(data.document.uploadedAt).toLocaleString('ko-KR')} 업로드, ${data.document.length.toLocaleString()}자) — 학부모 질문에 ${engine} 이 내용을 참고해 답변해요.`}
+  else{curriculumStatus.textContent=`아직 업로드된 커리큘럼 자료가 없어요. 업로드하면 ${engine} 참고해 답변해요.`}
 }
 document.querySelector('#curriculum-form').addEventListener('submit',async event=>{
   event.preventDefault();
