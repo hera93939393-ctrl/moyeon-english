@@ -159,7 +159,12 @@ app.post('/api/chat', async (req, res) => {
 // 학원 자료 업로드 (커리큘럼·셔틀노선·시간표 등, 여러 개 등록 가능 - 관리자 전용)
 app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일을 선택해 주세요.' });
-  const { originalname, buffer, mimetype } = req.file;
+  const { buffer, mimetype } = req.file;
+  // 일부 브라우저는 한글 파일명을 latin1으로 잘못 인코딩해서 보냅니다.
+  // 복구를 시도했을 때 깨진 문자(�)가 없으면(=정말 깨져있던 경우) 복구된 이름을 쓰고,
+  // 이미 정상(예: curl 업로드)이면 원본 그대로 둡니다.
+  const recovered = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  const originalname = recovered.includes('�') ? req.file.originalname : recovered;
   let text = '';
   try {
     if (mimetype === 'application/pdf' || /\.pdf$/i.test(originalname)) {
