@@ -46,9 +46,11 @@ async function initDb() {
     `);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS one_active_phone ON reservations(phone) WHERE status = 'confirmed'`);
     await pool.query(`DELETE FROM reservations WHERE created_at <= NOW() - INTERVAL '30 days'`);
+    // 카테고리(커리큘럼·레벨·시간표·셔틀버스 등)별로 파일 하나씩 등록. 같은 카테고리에 다시
+    // 올리면 교체(업서트)됩니다.
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS curriculum_docs (
-        id SERIAL PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS category_docs (
+        category TEXT PRIMARY KEY,
         filename TEXT NOT NULL,
         content TEXT NOT NULL,
         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -75,8 +77,8 @@ async function initDb() {
     sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_active_phone ON reservations(phone) WHERE status = 'confirmed'`);
     sqlite.prepare(`DELETE FROM reservations WHERE created_at <= datetime('now', '-30 days')`).run();
     sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS curriculum_docs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CREATE TABLE IF NOT EXISTS category_docs (
+        category TEXT PRIMARY KEY,
         filename TEXT NOT NULL,
         content TEXT NOT NULL,
         uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -201,29 +203,45 @@ async function listReminderDue(tomorrowPrefix) {
     .all(`${tomorrowPrefix}|%`);
 }
 
-// 학원 자료(커리큘럼·셔틀노선·시간표 등)는 여러 개를 각각 업로드해 함께 보관합니다.
-async function listCurriculumDocs() {
+// 카테고리(커리큘럼·레벨·시간표·셔틀버스·수강료·초등·중등·할인)별로 파일을 하나씩 등록합니다.
+// 등록된 카테고리는 그 파일 내용으로, 등록 안 된 카테고리는 기본 안내문으로 답합니다.
+async function getCategoryDoc(category) {
   if (useCloud) {
-    const res = await pool.query(`SELECT id, filename, content, uploaded_at AS "uploadedAt" FROM curriculum_docs ORDER BY id DESC`);
+    const res = await pool.query(`SELECT category, filename, content, uploaded_at AS "uploadedAt" FROM category_docs WHERE category = $1`, [category]);
+    return res.rows[0];
+  }
+  return sqlite.prepare(`SELECT category, filename, content, uploaded_at AS uploadedAt FROM category_docs WHERE category = ?`).get(category);
+}
+
+async function listCategoryDocs() {
+  if (useCloud) {
+    const res = await pool.query(`SELECT category, filename, content, uploaded_at AS "uploadedAt" FROM category_docs ORDER BY category`);
     return res.rows;
   }
-  return sqlite.prepare(`SELECT id, filename, content, uploaded_at AS uploadedAt FROM curriculum_docs ORDER BY id DESC`).all();
+  return sqlite.prepare(`SELECT category, filename, content, uploaded_at AS uploadedAt FROM category_docs ORDER BY category`).all();
 }
 
-async function saveCurriculumDoc(filename, content) {
+async function saveCategoryDoc(category, filename, content) {
   if (useCloud) {
-    await pool.query(`INSERT INTO curriculum_docs (filename, content) VALUES ($1, $2)`, [filename, content]);
+    await pool.query(
+      `INSERT INTO category_docs (category, filename, content, uploaded_at) VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (category) DO UPDATE SET filename = $2, content = $3, uploaded_at = NOW()`,
+      [category, filename, content]
+    );
     return;
   }
-  sqlite.prepare(`INSERT INTO curriculum_docs (filename, content) VALUES (?, ?)`).run(filename, content);
+  sqlite.prepare(
+    `INSERT INTO category_docs (category, filename, content, uploaded_at) VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT (category) DO UPDATE SET filename = excluded.filename, content = excluded.content, uploaded_at = excluded.uploaded_at`
+  ).run(category, filename, content);
 }
 
-async function deleteCurriculumDoc(id) {
+async function deleteCategoryDoc(category) {
   if (useCloud) {
-    const res = await pool.query(`DELETE FROM curriculum_docs WHERE id = $1`, [id]);
+    const res = await pool.query(`DELETE FROM category_docs WHERE category = $1`, [category]);
     return res.rowCount > 0;
   }
-  const result = sqlite.prepare(`DELETE FROM curriculum_docs WHERE id = ?`).run(id);
+  const result = sqlite.prepare(`DELETE FROM category_docs WHERE category = ?`).run(category);
   return result.changes > 0;
 }
 
@@ -239,7 +257,8 @@ module.exports = {
   cancelReservation,
   listReservations,
   listReminderDue,
-  listCurriculumDocs,
-  saveCurriculumDoc,
-  deleteCurriculumDoc,
+  getCategoryDoc,
+  listCategoryDocs,
+  saveCategoryDoc,
+  deleteCategoryDoc,
 };

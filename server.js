@@ -13,6 +13,28 @@ const port = Number(process.env.PORT) || 3000;
 const capacity = 30;
 const slotCapacity = 2;
 
+// 학부모 화면의 8개 안내 카테고리. 각 카테고리는 관리자가 파일을 올려 기본 안내문을
+// 대체할 수 있고, 파일이 없으면 data/academy.js 의 기본 문구를 그대로 사용합니다.
+const categoryLabels = {
+  curriculum: '📚 커리큘럼',
+  level: '🎯 레벨테스트',
+  schedule: '🕐 시간표',
+  shuttle: '🚌 셔틀버스',
+  tuition: '💰 수강료',
+  elementary: '🧒 초등 프로그램',
+  middle: '🎒 중등 프로그램',
+  discount: '🎁 할인 이벤트',
+};
+const categoryKeys = Object.keys(categoryLabels);
+
+// 카테고리의 현재 답변을 가져옵니다. 관리자가 올린 파일이 있으면 그 내용을,
+// 없으면 academy.js 의 기본 문구를 사용합니다.
+async function getCategoryAnswer(category) {
+  const doc = await db.getCategoryDoc(category);
+  if (doc) return doc.content;
+  return academy.answers[category] || null;
+}
+
 // 한글은 "노선은", "하원해요"처럼 단어 끝에 조사가 그대로 붙어서 나오기 때문에,
 // 문서의 "노선", "하원은"과 글자 그대로는 다를 수 있습니다. 그래서 뒤에서부터
 // 최대 2글자까지 줄여가며 대조해서, 조사가 붙어도 찾아지도록 합니다.
@@ -120,23 +142,24 @@ app.post('/api/chat', async (req, res) => {
   const question = String(req.body?.question || '').trim();
   const key = String(req.body?.key || '').trim();
 
-  // 빠른 버튼 클릭은 미리 정해둔 답변을 바로 반환 (AI 호출 없이 즉시, 무료)
-  if (key && academy.answers[key]) {
-    return res.json({ answer: academy.answers[key], mode: 'keyword' });
+  // 빠른 버튼 클릭은 해당 카테고리의 답변(업로드 자료 우선, 없으면 기본 문구)을 바로 반환
+  if (key && categoryKeys.includes(key)) {
+    const answer = await getCategoryAnswer(key);
+    if (answer) return res.json({ answer, mode: 'keyword' });
   }
 
-  const curriculumDocs = question ? await db.listCurriculumDocs() : [];
+  const categoryDocs = question ? await db.listCategoryDocs() : [];
 
-  // 자유 질문 1순위: 업로드된 학원 자료들(커리큘럼·셔틀·시간표 등) 전체에서 관련 문단 검색 (무료, AI 아님)
-  if (curriculumDocs.length) {
-    const found = searchCurriculum(curriculumDocs, question);
+  // 자유 질문 1순위: 카테고리별 업로드 자료 전체에서 관련 문단 검색 (무료, AI 아님)
+  if (categoryDocs.length) {
+    const found = searchCurriculum(categoryDocs, question);
     if (found) return res.json({ answer: found, mode: 'document-search' });
   }
 
   // 자유 질문 2순위: Claude API 키가 설정되어 있을 때만 AI로 답변 (선택 사항, 기본은 꺼짐)
   if (aiChat.isConfigured && question) {
     try {
-      const combinedText = curriculumDocs.map((d) => `[${d.filename}]\n${d.content}`).join('\n\n---\n\n');
+      const combinedText = categoryDocs.map((d) => `[${categoryLabels[d.category] || d.category}]\n${d.content}`).join('\n\n---\n\n');
       const aiAnswer = await aiChat.getAnswer({ question, academy, curriculumText: combinedText || undefined });
       if (aiAnswer) return res.json({ answer: aiAnswer, mode: 'ai' });
     } catch (err) {
@@ -153,11 +176,14 @@ app.post('/api/chat', async (req, res) => {
   ];
   const matched = rules.find(([, regex]) => regex.test(question))?.[0];
   const fallback = '수강료, 시간표, 레벨 테스트, 셔틀처럼 궁금한 내용을 조금 더 구체적으로 알려주세요.';
-  res.json({ answer: matched ? academy.answers[matched] : fallback, mode: 'keyword' });
+  const matchedAnswer = matched ? await getCategoryAnswer(matched) : null;
+  res.json({ answer: matchedAnswer || fallback, mode: 'keyword' });
 });
 
-// 학원 자료 업로드 (커리큘럼·셔틀노선·시간표 등, 여러 개 등록 가능 - 관리자 전용)
+// 카테고리별 학원 자료 업로드 (커리큘럼·레벨테스트·시간표 등 8개 중 하나 - 관리자 전용)
 app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req, res) => {
+  const category = String(req.body?.category || '').trim();
+  if (!categoryKeys.includes(category)) return res.status(400).json({ error: '올바른 카테고리를 선택해 주세요.' });
   if (!req.file) return res.status(400).json({ error: '파일을 선택해 주세요.' });
   const { buffer, mimetype } = req.file;
   // 일부 브라우저는 한글 파일명을 latin1으로 잘못 인코딩해서 보냅니다.
@@ -177,24 +203,35 @@ app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req,
   }
   text = text.trim();
   if (!text) return res.status(400).json({ error: '파일에서 내용을 찾지 못했어요.' });
-  await db.saveCurriculumDoc(originalname, text);
-  res.json({ message: '자료가 업로드되었습니다.', filename: originalname, length: text.length });
+  await db.saveCategoryDoc(category, originalname, text);
+  res.json({ message: '자료가 업로드되었습니다.', category, filename: originalname, length: text.length });
 });
 
-// 현재 업로드된 학원 자료 목록 확인 (원장님 전용)
+// 8개 카테고리 각각의 현재 상태(커스텀 자료 또는 기본값) 확인 (원장님 전용)
 app.get('/api/curriculum', requireAdminAuth, async (_req, res) => {
-  const docs = await db.listCurriculumDocs();
-  res.json({
-    documents: docs.map((d) => ({ id: d.id, filename: d.filename, uploadedAt: d.uploadedAt, length: d.content.length })),
-    aiEnabled: aiChat.isConfigured,
+  const docs = await db.listCategoryDocs();
+  const byCategory = new Map(docs.map((d) => [d.category, d]));
+  const categories = categoryKeys.map((key) => {
+    const doc = byCategory.get(key);
+    return {
+      category: key,
+      label: categoryLabels[key],
+      hasCustomDoc: !!doc,
+      filename: doc?.filename || null,
+      uploadedAt: doc?.uploadedAt || null,
+      length: doc?.content.length || null,
+    };
   });
+  res.json({ categories, aiEnabled: aiChat.isConfigured });
 });
 
-// 업로드된 학원 자료 삭제 (원장님 전용)
-app.delete('/api/curriculum/:id', requireAdminAuth, async (req, res) => {
-  const deleted = await db.deleteCurriculumDoc(Number(req.params.id));
+// 카테고리 자료 삭제 → 기본 문구로 되돌림 (원장님 전용)
+app.delete('/api/curriculum/:category', requireAdminAuth, async (req, res) => {
+  const category = String(req.params.category || '').trim();
+  if (!categoryKeys.includes(category)) return res.status(400).json({ error: '올바른 카테고리가 아니에요.' });
+  const deleted = await db.deleteCategoryDoc(category);
   if (!deleted) return res.status(404).json({ error: '삭제할 자료를 찾을 수 없어요.' });
-  res.json({ message: '자료가 삭제되었습니다.' });
+  res.json({ message: '자료가 삭제되어 기본 문구로 돌아갔습니다.' });
 });
 
 app.get('/api/reservations/status', async (_req, res) => {
