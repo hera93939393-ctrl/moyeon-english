@@ -13,20 +13,34 @@ const port = Number(process.env.PORT) || 3000;
 const capacity = 30;
 const slotCapacity = 2;
 
-// 업로드된 커리큘럼 문서에서 질문과 가장 관련 있는 문단을 찾습니다. (AI 없이, 무료 키워드 검색)
-function searchCurriculum(content, question) {
-  if (!content || !question) return null;
-  const paragraphs = content.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+// 한글은 "노선은", "하원해요"처럼 단어 끝에 조사가 그대로 붙어서 나오기 때문에,
+// 문서의 "노선", "하원은"과 글자 그대로는 다를 수 있습니다. 그래서 뒤에서부터
+// 최대 2글자까지 줄여가며 대조해서, 조사가 붙어도 찾아지도록 합니다.
+function termMatches(paragraph, term) {
+  const minLen = Math.max(2, term.length - 2);
+  for (let len = term.length; len >= minLen; len -= 1) {
+    if (paragraph.includes(term.slice(0, len))) return true;
+  }
+  return false;
+}
+
+// 업로드된 학원 자료들(커리큘럼·셔틀노선·시간표 등, 여러 개) 전체에서
+// 질문과 가장 관련 있는 문단을 찾습니다. (AI 없이, 무료 키워드 검색)
+function searchCurriculum(docs, question) {
+  if (!docs?.length || !question) return null;
   const terms = question.match(/[가-힣a-zA-Z0-9]{2,}/g) || [];
-  if (!paragraphs.length || !terms.length) return null;
+  if (!terms.length) return null;
 
   let best = null;
   let bestScore = 0;
-  for (const paragraph of paragraphs) {
-    const score = terms.reduce((sum, term) => sum + (paragraph.includes(term) ? 1 : 0), 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = paragraph;
+  for (const doc of docs) {
+    const paragraphs = doc.content.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    for (const paragraph of paragraphs) {
+      const score = terms.reduce((sum, term) => sum + (termMatches(paragraph, term) ? 1 : 0), 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = paragraph;
+      }
     }
   }
   return bestScore > 0 ? best : null;
@@ -111,18 +125,19 @@ app.post('/api/chat', async (req, res) => {
     return res.json({ answer: academy.answers[key], mode: 'keyword' });
   }
 
-  const curriculumDoc = question ? await db.getCurriculumDoc() : null;
+  const curriculumDocs = question ? await db.listCurriculumDocs() : [];
 
-  // 자유 질문 1순위: 업로드된 커리큘럼 자료에서 관련 문단 검색 (무료, AI 아님)
-  if (curriculumDoc) {
-    const found = searchCurriculum(curriculumDoc.content, question);
+  // 자유 질문 1순위: 업로드된 학원 자료들(커리큘럼·셔틀·시간표 등) 전체에서 관련 문단 검색 (무료, AI 아님)
+  if (curriculumDocs.length) {
+    const found = searchCurriculum(curriculumDocs, question);
     if (found) return res.json({ answer: found, mode: 'document-search' });
   }
 
   // 자유 질문 2순위: Claude API 키가 설정되어 있을 때만 AI로 답변 (선택 사항, 기본은 꺼짐)
   if (aiChat.isConfigured && question) {
     try {
-      const aiAnswer = await aiChat.getAnswer({ question, academy, curriculumText: curriculumDoc?.content });
+      const combinedText = curriculumDocs.map((d) => `[${d.filename}]\n${d.content}`).join('\n\n---\n\n');
+      const aiAnswer = await aiChat.getAnswer({ question, academy, curriculumText: combinedText || undefined });
       if (aiAnswer) return res.json({ answer: aiAnswer, mode: 'ai' });
     } catch (err) {
       console.error('[AI 답변 실패, 키워드 방식으로 대체]', err.message);
@@ -141,7 +156,7 @@ app.post('/api/chat', async (req, res) => {
   res.json({ answer: matched ? academy.answers[matched] : fallback, mode: 'keyword' });
 });
 
-// 커리큘럼 자료 업로드 (원장님 전용 - 관리자 인증 필요)
+// 학원 자료 업로드 (커리큘럼·셔틀노선·시간표 등, 여러 개 등록 가능 - 관리자 전용)
 app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일을 선택해 주세요.' });
   const { originalname, buffer, mimetype } = req.file;
@@ -158,16 +173,23 @@ app.post('/api/curriculum', requireAdminAuth, upload.single('file'), async (req,
   text = text.trim();
   if (!text) return res.status(400).json({ error: '파일에서 내용을 찾지 못했어요.' });
   await db.saveCurriculumDoc(originalname, text);
-  res.json({ message: '커리큘럼 자료가 업로드되었습니다.', filename: originalname, length: text.length });
+  res.json({ message: '자료가 업로드되었습니다.', filename: originalname, length: text.length });
 });
 
-// 현재 업로드된 커리큘럼 자료 정보 확인 (원장님 전용)
+// 현재 업로드된 학원 자료 목록 확인 (원장님 전용)
 app.get('/api/curriculum', requireAdminAuth, async (_req, res) => {
-  const doc = await db.getCurriculumDoc();
+  const docs = await db.listCurriculumDocs();
   res.json({
-    document: doc ? { filename: doc.filename, uploadedAt: doc.uploadedAt, length: doc.content.length } : null,
+    documents: docs.map((d) => ({ id: d.id, filename: d.filename, uploadedAt: d.uploadedAt, length: d.content.length })),
     aiEnabled: aiChat.isConfigured,
   });
+});
+
+// 업로드된 학원 자료 삭제 (원장님 전용)
+app.delete('/api/curriculum/:id', requireAdminAuth, async (req, res) => {
+  const deleted = await db.deleteCurriculumDoc(Number(req.params.id));
+  if (!deleted) return res.status(404).json({ error: '삭제할 자료를 찾을 수 없어요.' });
+  res.json({ message: '자료가 삭제되었습니다.' });
 });
 
 app.get('/api/reservations/status', async (_req, res) => {

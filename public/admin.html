@@ -4,15 +4,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Jua&display=swap');
 :root{--navy:#17324d;--coral:#ff7058;--yellow:#ffd65a;--paper:#fffaf0;--ink:#172534}*{box-sizing:border-box}body{margin:0;padding:28px;color:var(--ink);background:var(--paper);font-family:"Gowun Dodum",sans-serif}.wrap{width:min(1100px,100%);margin:auto}header{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:24px}h1{margin:0;font:400 36px "Jua",sans-serif}button{padding:10px 15px;color:#fff;background:var(--navy);border:2px solid var(--ink);border-radius:10px;font:400 16px "Jua",sans-serif;box-shadow:3px 3px 0 var(--coral);cursor:pointer}.summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}.badge{padding:8px 12px;background:#fff;border:2px solid var(--ink);border-radius:999px}.table-wrap{overflow:auto;background:#fff;border:3px solid var(--ink);border-radius:18px;box-shadow:7px 7px 0 var(--yellow)}table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:12px;text-align:left;border-bottom:1px solid #ddd}th{background:var(--navy);color:#fff;font-family:"Jua",sans-serif;font-weight:400}tr:last-child td{border:0}.cancelled{opacity:.5}.empty{padding:36px;text-align:center}.note{margin-top:18px;color:#667;font-size:14px}@media(max-width:650px){body{padding:18px}header{align-items:start;flex-direction:column}h1{font-size:30px}}
 .curriculum{padding:20px 24px;margin-bottom:18px;background:#fff;border:3px solid var(--ink);border-radius:18px;box-shadow:6px 6px 0 var(--yellow)}.curriculum h2{margin:0 0 6px;font:400 22px "Jua",sans-serif}.curriculum .muted{margin:0 0 14px;color:#667;font-size:14px}.curriculum form{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.curriculum input[type=file]{flex:1;min-width:220px;padding:9px;background:#fff;border:2px solid var(--ink);border-radius:10px}.curriculum .result{margin:12px 0 0;padding:10px 13px;border:2px solid var(--ink);border-radius:10px;display:none}.curriculum .result.show{display:block}.curriculum .result.error{color:#8a251a;background:#ffe2dc}.curriculum .result.ok{color:#155c3d;background:#e2f5ea}
+.curriculum .doc-list{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}.curriculum .doc-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;background:#fdf6e3;border:2px solid var(--ink);border-radius:10px;font-size:13.5px}.curriculum .doc-name{font-weight:700}.curriculum .doc-meta{color:#667;font-size:12px;margin-left:6px}.curriculum .doc-list button.delete{padding:5px 10px;font-size:12px;background:#fff;color:#8a251a;box-shadow:2px 2px 0 var(--ink)}.curriculum .empty-docs{color:#667;font-size:13px;padding:2px 0}
 </style></head><body><main class="wrap"><header><div><h1>모연 English 예약 관리</h1><p>레벨 테스트 예약과 문자 리마인더 대상을 확인하세요.</p></div><button id="refresh">새로고침</button></header><div class="summary"><span id="total" class="badge">예약 확인 중…</span><span id="reminders" class="badge">문자 대상 확인 중…</span></div>
 <section class="curriculum">
-  <h2>📎 커리큘럼 자료 업로드</h2>
+  <h2>📎 학원 자료 업로드</h2>
+  <p class="muted">커리큘럼·셔틀 노선·시간표 등 여러 파일을 각각 올려두면, 챗봇이 전부 함께 참고해서 답변해요.</p>
   <p id="curriculum-status" class="muted">불러오는 중…</p>
   <form id="curriculum-form">
     <input type="file" id="curriculum-file" accept=".pdf,.txt" required>
     <button type="submit">업로드</button>
   </form>
   <p id="curriculum-result" class="result"></p>
+  <ul id="curriculum-list" class="doc-list"></ul>
 </section>
 <div class="table-wrap"><table><thead><tr><th>학생</th><th>학년</th><th>연락처</th><th>학교</th><th>일시</th><th>상태</th></tr></thead><tbody id="rows"></tbody></table><p id="empty" class="empty" hidden>아직 예약이 없습니다.</p></div><p class="note">개인정보는 예약 확인 목적으로만 사용하며 수집 후 30일이 지나면 자동 삭제됩니다. 이 화면은 관리자 로그인으로 보호되고 있습니다.</p></main>
 <script>
@@ -22,12 +25,32 @@ document.querySelector('#refresh').addEventListener('click',load);load();
 
 const curriculumStatus=document.querySelector('#curriculum-status');
 const curriculumResult=document.querySelector('#curriculum-result');
+const curriculumList=document.querySelector('#curriculum-list');
 function showCurriculumResult(message,isError){curriculumResult.textContent=message;curriculumResult.className='result show'+(isError?' error':' ok')}
 async function loadCurriculumStatus(){
   const data=await fetch('/api/curriculum').then(r=>r.json());
   const engine=data.aiEnabled?'AI(Claude)가':'파일 검색 방식이';
-  if(data.document){curriculumStatus.textContent=`현재 자료: ${data.document.filename} (${new Date(data.document.uploadedAt).toLocaleString('ko-KR')} 업로드, ${data.document.length.toLocaleString()}자) — 학부모 질문에 ${engine} 이 내용을 참고해 답변해요.`}
-  else{curriculumStatus.textContent=`아직 업로드된 커리큘럼 자료가 없어요. 업로드하면 ${engine} 참고해 답변해요.`}
+  curriculumStatus.textContent=data.documents.length
+    ? `총 ${data.documents.length}개 자료 업로드됨 — 학부모 질문에 ${engine} 이 자료들을 참고해 답변해요.`
+    : `아직 업로드된 자료가 없어요. 업로드하면 ${engine} 참고해 답변해요.`;
+
+  curriculumList.textContent='';
+  data.documents.forEach(doc=>{
+    const li=document.createElement('li');
+    const left=document.createElement('span');
+    const name=document.createElement('span');name.className='doc-name';name.textContent=doc.filename;
+    const meta=document.createElement('span');meta.className='doc-meta';meta.textContent=`${new Date(doc.uploadedAt).toLocaleString('ko-KR')} · ${doc.length.toLocaleString()}자`;
+    left.append(name,meta);
+    const del=document.createElement('button');del.type='button';del.className='delete';del.textContent='삭제';
+    del.addEventListener('click',async()=>{
+      if(!confirm(`"${doc.filename}" 자료를 삭제할까요?`))return;
+      const res=await fetch(`/api/curriculum/${doc.id}`,{method:'DELETE'});
+      const d=await res.json();
+      if(res.ok)await loadCurriculumStatus();else showCurriculumResult('⚠️ '+d.error,true);
+    });
+    li.append(left,del);
+    curriculumList.append(li);
+  });
 }
 document.querySelector('#curriculum-form').addEventListener('submit',async event=>{
   event.preventDefault();

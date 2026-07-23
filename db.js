@@ -201,22 +201,30 @@ async function listReminderDue(tomorrowPrefix) {
     .all(`${tomorrowPrefix}|%`);
 }
 
-async function getCurriculumDoc() {
+// 학원 자료(커리큘럼·셔틀노선·시간표 등)는 여러 개를 각각 업로드해 함께 보관합니다.
+async function listCurriculumDocs() {
   if (useCloud) {
-    const res = await pool.query(`SELECT filename, content, uploaded_at AS "uploadedAt" FROM curriculum_docs ORDER BY id DESC LIMIT 1`);
-    return res.rows[0];
+    const res = await pool.query(`SELECT id, filename, content, uploaded_at AS "uploadedAt" FROM curriculum_docs ORDER BY id DESC`);
+    return res.rows;
   }
-  return sqlite.prepare(`SELECT filename, content, uploaded_at AS uploadedAt FROM curriculum_docs ORDER BY id DESC LIMIT 1`).get();
+  return sqlite.prepare(`SELECT id, filename, content, uploaded_at AS uploadedAt FROM curriculum_docs ORDER BY id DESC`).all();
 }
 
 async function saveCurriculumDoc(filename, content) {
   if (useCloud) {
-    await pool.query(`DELETE FROM curriculum_docs`);
     await pool.query(`INSERT INTO curriculum_docs (filename, content) VALUES ($1, $2)`, [filename, content]);
     return;
   }
-  sqlite.exec(`DELETE FROM curriculum_docs`);
   sqlite.prepare(`INSERT INTO curriculum_docs (filename, content) VALUES (?, ?)`).run(filename, content);
+}
+
+async function deleteCurriculumDoc(id) {
+  if (useCloud) {
+    const res = await pool.query(`DELETE FROM curriculum_docs WHERE id = $1`, [id]);
+    return res.rowCount > 0;
+  }
+  const result = sqlite.prepare(`DELETE FROM curriculum_docs WHERE id = ?`).run(id);
+  return result.changes > 0;
 }
 
 module.exports = {
@@ -231,6 +239,7 @@ module.exports = {
   cancelReservation,
   listReservations,
   listReminderDue,
-  getCurriculumDoc,
+  listCurriculumDocs,
   saveCurriculumDoc,
+  deleteCurriculumDoc,
 };
